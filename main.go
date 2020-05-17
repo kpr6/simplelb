@@ -75,7 +75,7 @@ func (s *ServerPool) GetNextPeer() *Backend {
 	next := s.NextIndex()
 	l := len(s.backends) + next // start from next and move a full cycle
 	for i := next; i < l; i++ {
-		idx := i % len(s.backends) // take an index by modding
+		idx := i % len(s.backends)     // take an index by modding
 		if s.backends[idx].IsAlive() { // if we have an alive backend, use it and store if its not the original one
 			if i != next {
 				atomic.StoreUint64(&s.current, uint64(idx))
@@ -129,6 +129,7 @@ func lb(w http.ResponseWriter, r *http.Request) {
 		peer.ReverseProxy.ServeHTTP(w, r)
 		return
 	}
+
 	http.Error(w, "Service not available", http.StatusServiceUnavailable)
 }
 
@@ -148,12 +149,10 @@ func isBackendAlive(u *url.URL) bool {
 func healthCheck() {
 	t := time.NewTicker(time.Minute * 2)
 	for {
-		select {
-		case <-t.C:
-			log.Println("Starting health check...")
-			serverPool.HealthCheck()
-			log.Println("Health check completed")
-		}
+		<-t.C
+		log.Println("Starting health check...")
+		serverPool.HealthCheck()
+		log.Println("Health check completed")
 	}
 }
 
@@ -177,17 +176,18 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
+		// actually creating a backend here. This will be one of those servers which
+		// will be fronted by reverse proxy
 		proxy := httputil.NewSingleHostReverseProxy(serverUrl)
 		proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, e error) {
 			log.Printf("[%s] %s\n", serverUrl.Host, e.Error())
+			// the reason for storing attempts and retries in context is that these vars should only be
+			// scoped to one particular request
 			retries := GetRetryFromContext(request)
 			if retries < 3 {
-				select {
-				case <-time.After(10 * time.Millisecond):
-					ctx := context.WithValue(request.Context(), Retry, retries+1)
-					proxy.ServeHTTP(writer, request.WithContext(ctx))
-				}
+				<-time.After(10 * time.Millisecond)
+				ctx := context.WithValue(request.Context(), Retry, retries+1)
+				proxy.ServeHTTP(writer, request.WithContext(ctx))
 				return
 			}
 
@@ -209,7 +209,7 @@ func main() {
 		log.Printf("Configured server: %s\n", serverUrl)
 	}
 
-	// create http server
+	// create http server, a reverse proxy sitting in front of backends
 	server := http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: http.HandlerFunc(lb),
